@@ -1,0 +1,85 @@
+.github/workflows/release.yml
+
+------
+
+name: Release IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: macos-15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Read version from project
+        id: version
+        run: |
+          VER=$(grep -m1 'MARKETING_VERSION' app/dauphin.xcodeproj/project.pbxproj \
+            | sed 's/.*MARKETING_VERSION = //;s/;//;s/ //')
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "IPA name: dauphin_${VER}.ipa"
+
+      - name: Select Xcode version
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.1'
+
+      - name: Install Dependencies
+        run: brew install ldid xz
+
+      - name: Build IPA
+        run: |
+          chmod +x ./scripts/build.command
+          bash ./scripts/build.command
+
+      - name: Rename IPA
+        run: mv dauphin.ipa "dauphin_${{ steps.version.outputs.version }}.ipa"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ steps.version.outputs.version }}"
+          name: "dauphin v${{ steps.version.outputs.version }}"
+          draft: false
+          prerelease: false
+          files: "dauphin_${{ steps.version.outputs.version }}.ipa"
+
+------
+
+scripts/build.command
+
+------
+
+#!/bin/bash
+
+set -ex
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+GIT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+cd "$GIT_ROOT" || exit
+
+rm -rf build Payload dauphin.ipa
+
+ xcodebuild -project "$GIT_ROOT/app/dauphin.xcodeproj" \
+ -scheme dauphin -configuration Release \
+ -derivedDataPath "$GIT_ROOT/build" \
+ -destination 'generic/platform=iOS' \
+ -sdk iphoneos \
+ clean build \
+ CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO ONLY_ACTIVE_ARCH=NO
+
+find build/Build/Products/Release-iphoneos/dauphin.app \
+  -type f \( -name "*.appex" -o -name "dauphin" \) \
+  -print0 | xargs -0 -I{} ldid -S -M {}
+ln -sf build/Build/Products/Release-iphoneos Payload
+zip -r9 dauphin.ipa Payload/dauphin.app
+
